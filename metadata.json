@@ -1,0 +1,10 @@
+
+{
+  "name": "EGYPTOUR",
+  "description": "Your AI-powered gamified travel guide to Ancient Egypt. Discover, explore, and earn rewards.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ]
+}

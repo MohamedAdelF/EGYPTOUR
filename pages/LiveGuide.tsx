@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import EyeOfHorus from '../components/icons/EyeOfHorus';
 import { GoogleGenAI, Modality } from '@google/genai';
-import { UserProfile, Mission } from '../types';
-import { storage, db, auth } from '../lib/firebase';
+import { UserProfile, Mission, AIPersonality } from '../types';
+import { storage, db, auth, getUserProfile, updateUserProfile } from '../lib/firebase';
 import { ref, uploadString, getDownloadURL } from 'firebase/storage';
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
 
@@ -47,6 +47,18 @@ const LiveGuide: React.FC<LiveGuideProps> = ({ onBack, onUpdateStats, mission, u
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('environment');
+  const [selectedPersonality, setSelectedPersonality] = useState<AIPersonality>(AIPersonality.FRIENDLY);
+
+  // Load personality from user profile
+  useEffect(() => {
+    if (auth.currentUser && user) {
+      getUserProfile(auth.currentUser.uid).then(profile => {
+        if (profile && (profile as any).aiPersonality) {
+          setSelectedPersonality((profile as any).aiPersonality as AIPersonality);
+        }
+      }).catch(() => {});
+    }
+  }, [user]);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -128,12 +140,103 @@ const LiveGuide: React.FC<LiveGuideProps> = ({ onBack, onUpdateStats, mission, u
     }
   };
 
-  // Ultra-Stable Speech Helper
+  // Get personality-specific voice settings
+  const getPersonalityVoiceSettings = (personality: AIPersonality) => {
+    switch (personality) {
+      case AIPersonality.CLEOPATRA:
+        return { rate: 0.95, pitch: 1.1, volume: 1.0 };
+      case AIPersonality.AHMED:
+        return { rate: 1.05, pitch: 0.9, volume: 1.0 };
+      case AIPersonality.ZAHI:
+        return { rate: 0.9, pitch: 0.95, volume: 1.0 };
+      case AIPersonality.FRIENDLY:
+      default:
+        return { rate: 1.0, pitch: 1.0, volume: 1.0 };
+    }
+  };
+
+  // Get personality-specific system prompt
+  const getPersonalityPrompt = (personality: AIPersonality): string => {
+    const locationContext = mission ? `User is currently at: ${mission.title}` : '';
+    const languageContext = `User Language: ${isArabic ? 'Arabic' : 'English'} (Reply in this language)`;
+    
+    switch (personality) {
+      case AIPersonality.CLEOPATRA:
+        return `You are "Cleopatra", a passionate historical storyteller and queen of Egypt.
+        ${locationContext}
+        ${languageContext}
+        Your personality:
+        - Elegant, dramatic, and enchanting
+        - Use poetic language and historical references
+        - Share fascinating stories about pharaohs, queens, and ancient Egyptian life
+        - Make history come alive with vivid descriptions
+        - Use metaphors and imagery
+        - Be passionate about Egyptian heritage
+        
+        If the image shows a monument, tell its story with passion and drama.
+        Keep responses engaging, beautiful, and historically rich.`;
+        
+      case AIPersonality.AHMED:
+        return `You are "Ahmed the Guide", a friendly local Egyptian expert guide.
+        ${locationContext}
+        ${languageContext}
+        Your personality:
+        - Warm, welcoming, and knowledgeable
+        - Use casual, friendly language
+        - Share insider tips and local knowledge
+        - Tell personal stories and experiences
+        - Use Egyptian expressions and humor
+        - Make tourists feel at home
+        
+        If the image shows a monument, explain it like a local friend would.
+        Be helpful, friendly, and make everything accessible and fun.`;
+        
+      case AIPersonality.ZAHI:
+        return `You are "Dr. Zahi Hawass", a world-renowned archaeologist and Egyptologist.
+        ${locationContext}
+        ${languageContext}
+        Your personality:
+        - Academic, precise, and authoritative
+        - Share detailed archaeological facts and discoveries
+        - Use scientific terminology when appropriate
+        - Reference recent discoveries and research
+        - Be passionate about preservation
+        - Share behind-the-scenes insights
+        
+        If the image shows a monument, provide expert archaeological analysis.
+        Be informative, accurate, and share cutting-edge knowledge.`;
+        
+      case AIPersonality.FRIENDLY:
+      default:
+        return `You are "Pharaoh", a friendly and enthusiastic AI travel companion.
+        ${locationContext}
+        ${languageContext}
+        Your personality:
+        - Casual, upbeat, and approachable
+        - Use simple, clear language
+        - Be encouraging and supportive
+        - Share interesting facts in a fun way
+        - Help users capture great photos
+        - Make exploring exciting
+        
+        If the image shows a monument, explain it naturally and enthusiastically.
+        Keep it brief, engaging, and easy to understand.`;
+    }
+  };
+
+  // Throttled speech to prevent overlapping
   const speakText = (text: string) => {
     if (!('speechSynthesis' in window) || !text) return;
 
-    // First, clear any queue
-    window.speechSynthesis.cancel();
+    // Cancel any ongoing speech
+    try {
+      window.speechSynthesis.cancel();
+    } catch (e) {
+      console.warn('Speech cancellation warning:', e);
+    }
+
+    // Get personality voice settings
+    const voiceSettings = getPersonalityVoiceSettings(selectedPersonality);
 
     // Split text into chunks (by punctuation)
     const chunks = text.match(/[^.!?،؟]+[.!?،؟]*/g) || [text];
@@ -147,9 +250,9 @@ const LiveGuide: React.FC<LiveGuideProps> = ({ onBack, onUpdateStats, mission, u
 
       const utterance = new SpeechSynthesisUtterance(chunks[currentIndex].trim());
       utterance.lang = /[\u0600-\u06FF]/.test(text) ? 'ar-EG' : 'en-US';
-      utterance.volume = 1.0;
-      utterance.rate = 1.0;
-      utterance.pitch = 1.0;
+      utterance.volume = voiceSettings.volume;
+      utterance.rate = voiceSettings.rate;
+      utterance.pitch = voiceSettings.pitch;
 
       utterance.onstart = () => setIsSpeaking(true);
       utterance.onend = () => {
@@ -217,15 +320,42 @@ const LiveGuide: React.FC<LiveGuideProps> = ({ onBack, onUpdateStats, mission, u
       setIsActive(true);
       setIsConnecting(false);
 
-      // Welcome message
-      const welcomeMsg = isArabic
-        ? 'مرحباً! أنا "فرعون"، مرشدك الشخصي. 🏛️\nجاهز لتحليل ما تراه.. التقط صورة أو اسألني!'
-        : 'Hello! I am "Pharaoh", your personal guide. 🏛️\nReady to analyze what you see.. Snap a photo or ask me!';
+      // Welcome message based on personality
+      const getWelcomeMessage = (personality: AIPersonality): string => {
+        if (isArabic) {
+          switch (personality) {
+            case AIPersonality.CLEOPATRA:
+              return 'مرحباً! أنا كليوباترا، راوية التاريخ الملكية. 🏛️✨\nدعني أحكي لك قصص الملوك والفراعنة...';
+            case AIPersonality.AHMED:
+              return 'أهلاً وسهلاً! أنا أحمد، مرشدك المحلي. 🗺️\nأخبرني ماذا تريد أن تعرف عن مصر...';
+            case AIPersonality.ZAHI:
+              return 'مرحباً! أنا الدكتور زاهي حواس، عالم الآثار. 🔬\nدعني أشاركك أحدث الاكتشافات...';
+            case AIPersonality.FRIENDLY:
+            default:
+              return 'مرحباً! أنا "فرعون"، مرشدك الشخصي. 🏛️\nجاهز لتحليل ما تراه.. التقط صورة أو اسألني!';
+          }
+        } else {
+          switch (personality) {
+            case AIPersonality.CLEOPATRA:
+              return 'Welcome! I am Cleopatra, your royal storyteller. 🏛️✨\nLet me share the tales of pharaohs and queens...';
+            case AIPersonality.AHMED:
+              return 'Ahlan wa sahlan! I am Ahmed, your local guide. 🗺️\nTell me what you want to know about Egypt...';
+            case AIPersonality.ZAHI:
+              return 'Hello! I am Dr. Zahi Hawass, archaeologist. 🔬\nLet me share the latest discoveries...';
+            case AIPersonality.FRIENDLY:
+            default:
+              return 'Hello! I am "Pharaoh", your personal guide. 🏛️\nReady to analyze what you see.. Snap a photo or ask me!';
+          }
+        }
+      };
 
+      const welcomeMsg = getWelcomeMessage(selectedPersonality);
       setTranscription([welcomeMsg]);
 
-      // Speak welcome message (now called after user gesture priming)
-      const welcomeText = isArabic ? 'مرحباً! أنا فرعون، مرشدك الشخصي.' : 'Hello! I am Pharaoh, your personal guide.';
+      // Speak welcome message
+      const welcomeText = isArabic 
+        ? welcomeMsg.replace(/🏛️|✨|🗺️|🔬/g, '').split('\n')[0]
+        : welcomeMsg.replace(/🏛️|✨|🗺️|🔬/g, '').split('\n')[0];
       speakText(welcomeText);
 
       // Store AI instance for interactions
@@ -238,8 +368,19 @@ const LiveGuide: React.FC<LiveGuideProps> = ({ onBack, onUpdateStats, mission, u
     }
   };
 
+  // Throttled frame capture for performance
+  let lastCaptureTime = 0;
+  const CAPTURE_THROTTLE_MS = 500; // Capture max once per 500ms
+
   const captureFrameBase64 = (): string | null => {
     if (!canvasRef.current || !videoRef.current) return null;
+
+    const now = Date.now();
+    if (now - lastCaptureTime < CAPTURE_THROTTLE_MS) {
+      // Return cached frame if too soon
+      return null;
+    }
+    lastCaptureTime = now;
 
     const canvas = canvasRef.current;
     const video = videoRef.current;
@@ -247,12 +388,17 @@ const LiveGuide: React.FC<LiveGuideProps> = ({ onBack, onUpdateStats, mission, u
 
     if (!ctx) return null;
 
-    canvas.width = video.videoWidth || 640;
-    canvas.height = video.videoHeight || 480;
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    try {
+      canvas.width = video.videoWidth || 640;
+      canvas.height = video.videoHeight || 480;
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    // Return full data URL for Gemini generateContent
-    return canvas.toDataURL('image/jpeg', 0.8);
+      // Compress image for better performance
+      return canvas.toDataURL('image/jpeg', 0.7); // Reduced quality for performance
+    } catch (error) {
+      console.error('Frame capture error:', error);
+      return null;
+    }
   };
 
   // Capture Photo and Save to Firebase
@@ -311,17 +457,15 @@ const LiveGuide: React.FC<LiveGuideProps> = ({ onBack, onUpdateStats, mission, u
       // Capture current image
       const imageBase64 = captureFrameBase64();
 
+      const personalityPrompt = getPersonalityPrompt(selectedPersonality);
       const safetyPrompt = `
-      You are "Pharaoh", an expert Egyptian tour guide.
+      ${personalityPrompt}
+      
       Analyze the attached image carefully.
-      ${mission ? `User is currently at: ${mission.title}` : ''}
-      
       User Question: ${prompt}
-      User Language: ${isArabic ? 'Arabic' : 'English'} (Reply in this language)
       
-      If the image shows a monument, explain it naturally and enthusiastically.
-      If unclear, ask for clarification.
-      Keep it brief and engaging.`;
+      If the image shows a monument, respond according to your personality.
+      If unclear, ask for clarification.`;
 
       // Prepare content parts
       const parts: any[] = [{ text: safetyPrompt }];
@@ -350,9 +494,14 @@ const LiveGuide: React.FC<LiveGuideProps> = ({ onBack, onUpdateStats, mission, u
       // Speak response
       speakText(text);
 
-    } catch (err) {
+    } catch (err: any) {
       console.error('Prompt error:', err);
-      setTranscription(prev => [...prev, '⚠️ حدث خطأ، حاول مرة أخرى.']);
+      const errorMessage = err.message?.includes('API')
+        ? '⚠️ خطأ في الاتصال بالخدمة. حاول مرة أخرى.'
+        : err.message?.includes('429')
+        ? '⚠️ تم تجاوز الحد المسموح. انتظر قليلاً وحاول مرة أخرى.'
+        : '⚠️ حدث خطأ، حاول مرة أخرى.';
+      setTranscription(prev => [...prev, errorMessage]);
       setIsSpeaking(false);
     }
   };
@@ -412,13 +561,16 @@ const LiveGuide: React.FC<LiveGuideProps> = ({ onBack, onUpdateStats, mission, u
         photosAdvised: Math.floor(messagesCount / 1.5),
         xpEarned,
       });
-    } catch (err) {
+    } catch (err: any) {
       console.error("Summary AI error:", err);
       // Fallback stats if AI fails
+      const fallbackTopics = isArabic 
+        ? ['رحلة معرفية ممتعة', 'استكشاف المعالم الأثرية', 'تعلم تاريخ مصر']
+        : ['Insightful journey', 'Exploring monuments', 'Learning Egyptian history'];
       setSessionStats({
         duration: sessionTime,
-        topicsDiscussed: [isArabic ? 'رحلة معرفية ممتعة' : 'Insightful journey'],
-        photosAdvised: 1,
+        topicsDiscussed: fallbackTopics,
+        photosAdvised: Math.floor(messagesCount / 1.5),
         xpEarned,
       });
     } finally {

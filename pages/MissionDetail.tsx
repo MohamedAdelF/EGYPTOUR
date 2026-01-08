@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import EyeOfHorus from '../components/icons/EyeOfHorus';
-import { Mission } from '../types';
-import { auth, updateMissionStatus, updateTaskStatus, getTrip } from '../lib/firebase';
+import { Mission, HiddenSecret } from '../types';
+import { auth, updateMissionStatus, updateTaskStatus, getTrip, saveDiscoveredSecret, checkSecretDiscovered, updateSecretDiscoveryCount, updateUserStats } from '../lib/firebase';
+import { getSecretsForMission, isNearSecret } from '../lib/secrets';
 
 interface MissionDetailProps {
   mission: Mission | null;
@@ -14,6 +15,10 @@ interface MissionDetailProps {
 const MissionDetail: React.FC<MissionDetailProps> = ({ mission, onCapture, onBack, onStartGuide, onMissionUpdate }) => {
   const [currentMission, setCurrentMission] = useState<Mission | null>(mission);
   const [tripId, setTripId] = useState<string>('active_trip');
+  const [availableSecrets, setAvailableSecrets] = useState<HiddenSecret[]>([]);
+  const [discoveredSecrets, setDiscoveredSecrets] = useState<Set<string>>(new Set());
+  const [secretNotification, setSecretNotification] = useState<HiddenSecret | null>(null);
+  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
 
   useEffect(() => {
     setCurrentMission(mission);
@@ -26,8 +31,83 @@ const MissionDetail: React.FC<MissionDetailProps> = ({ mission, onCapture, onBac
       }).catch(err => {
         console.error("Error loading trip:", err);
       });
+
+      // Load secrets for this mission
+      const secrets = getSecretsForMission(mission.id);
+      setAvailableSecrets(secrets);
+
+      // Load discovered secrets
+      secrets.forEach(async (secret) => {
+        const isDiscovered = await checkSecretDiscovered(auth.currentUser!.uid, secret.id);
+        if (isDiscovered) {
+          setDiscoveredSecrets(prev => new Set([...prev, secret.id]));
+        }
+      });
     }
   }, [mission]);
+
+  // Get user location and check for secrets (throttled)
+  useEffect(() => {
+    if (!navigator.geolocation || !currentMission || availableSecrets.length === 0) return;
+
+    let lastCheckTime = 0;
+    const CHECK_INTERVAL = 3000; // Check every 3 seconds
+
+    const watchId = navigator.geolocation.watchPosition(
+      (position) => {
+        const now = Date.now();
+        if (now - lastCheckTime < CHECK_INTERVAL) return;
+        lastCheckTime = now;
+
+        const location = {
+          lat: position.coords.latitude,
+          lng: position.coords.longitude
+        };
+        setUserLocation(location);
+
+        // Check for nearby secrets (debounced)
+        if (auth.currentUser) {
+          availableSecrets.forEach(async (secret) => {
+            try {
+              const isDiscovered = await checkSecretDiscovered(auth.currentUser!.uid, secret.id);
+              if (!isDiscovered && isNearSecret(location.lat, location.lng, secret)) {
+                // Found a secret!
+                await handleSecretDiscovery(secret);
+              }
+            } catch (error) {
+              console.error('Secret check error:', error);
+            }
+          });
+        }
+      },
+      (error) => console.error('Geolocation error:', error),
+      { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 }
+    );
+
+    return () => navigator.geolocation.clearWatch(watchId);
+  }, [currentMission, availableSecrets]);
+
+  const handleSecretDiscovery = async (secret: HiddenSecret) => {
+    if (!auth.currentUser) return;
+
+    try {
+      // Save to Firebase
+      await saveDiscoveredSecret(auth.currentUser.uid, secret.id);
+      await updateSecretDiscoveryCount(secret.id);
+      await updateUserStats(auth.currentUser.uid, secret.xpReward, secret.goldReward);
+
+      // Update local state
+      setDiscoveredSecrets(prev => new Set([...prev, secret.id]));
+
+      // Show notification
+      setSecretNotification(secret);
+
+      // Auto-hide notification after 5 seconds
+      setTimeout(() => setSecretNotification(null), 5000);
+    } catch (error) {
+      console.error("Error discovering secret:", error);
+    }
+  };
 
   if (!currentMission) return null;
 
@@ -86,6 +166,35 @@ const MissionDetail: React.FC<MissionDetailProps> = ({ mission, onCapture, onBac
 
   return (
     <div className="flex flex-col h-full bg-[#0f0d0a]">
+      {/* Secret Discovery Notification */}
+      {secretNotification && (
+        <div className="fixed top-20 left-0 right-0 z-50 max-w-md mx-auto px-4 animate-fade-in">
+          <div className="bg-gradient-to-r from-purple-600 to-pink-600 p-6 rounded-3xl border-2 border-white/20 shadow-2xl">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-12 h-12 rounded-full bg-white/20 flex items-center justify-center">
+                <span className="material-symbols-outlined text-white text-2xl">auto_awesome</span>
+              </div>
+              <div>
+                <h3 className="text-white font-bold text-lg font-arabic">اكتشفت سراً مخفياً! 🎉</h3>
+                <p className="text-white/80 text-xs font-arabic">{secretNotification.title}</p>
+              </div>
+            </div>
+            <p className="text-white/90 text-sm font-arabic mb-4">{secretNotification.description}</p>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <span className="text-white font-bold">+{secretNotification.xpReward} XP</span>
+                <span className="text-yellow-300 font-bold">+{secretNotification.goldReward} G</span>
+              </div>
+              {secretNotification.rarityPercentage && (
+                <span className="text-xs text-white/80 font-arabic">
+                  فقط {secretNotification.rarityPercentage}% يكتشفون هذا!
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Hero Image */}
       <div className="relative h-[45vh] w-full shrink-0">
         <div className="absolute top-12 left-6 right-6 flex items-center justify-between z-20">
@@ -172,6 +281,60 @@ const MissionDetail: React.FC<MissionDetailProps> = ({ mission, onCapture, onBac
             </div>
             <span className="material-symbols-outlined text-blue-400 rtl:rotate-180">arrow_forward</span>
           </button>
+        )}
+
+        {/* Hidden Secrets Section */}
+        {availableSecrets.length > 0 && (
+          <div className="mb-8">
+            <h2 className="text-lg font-bold text-white mb-3 font-arabic flex items-center gap-2">
+              <span className="material-symbols-outlined text-primary">visibility_off</span>
+              الأسرار المخفية
+            </h2>
+            <div className="space-y-3">
+              {availableSecrets.map((secret) => {
+                const isDiscovered = discoveredSecrets.has(secret.id);
+                return (
+                  <div
+                    key={secret.id}
+                    className={`p-4 rounded-2xl border transition-all ${
+                      isDiscovered
+                        ? 'bg-green-500/10 border-green-500/30'
+                        : 'bg-purple-500/10 border-purple-500/30'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        {isDiscovered ? (
+                          <span className="material-symbols-outlined text-green-400">check_circle</span>
+                        ) : (
+                          <span className="material-symbols-outlined text-purple-400">visibility_off</span>
+                        )}
+                        <h3 className={`text-sm font-bold font-arabic ${isDiscovered ? 'text-green-400' : 'text-purple-400'}`}>
+                          {secret.title}
+                        </h3>
+                      </div>
+                      {secret.rarityPercentage && !isDiscovered && (
+                        <span className="text-xs text-purple-400 font-bold">
+                          فقط {secret.rarityPercentage}% يكتشفون هذا!
+                        </span>
+                      )}
+                    </div>
+                    {isDiscovered ? (
+                      <p className="text-xs text-green-300 font-arabic">{secret.description}</p>
+                    ) : (
+                      <p className="text-xs text-gray-400 font-arabic">{secret.hint}</p>
+                    )}
+                    {isDiscovered && (
+                      <div className="flex items-center gap-2 mt-2 text-xs">
+                        <span className="text-primary font-bold">+{secret.xpReward} XP</span>
+                        <span className="text-yellow-400 font-bold">+{secret.goldReward} G</span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         )}
 
         {/* Tasks */}

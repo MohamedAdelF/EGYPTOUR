@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, lazy, Suspense, useMemo, useCallback } from 'react';
 import { AppView, Mission, Trip, UserProfile } from './types';
 import { auth, onAuthChange, updateUserStats, db, getTrip } from './lib/firebase';
 import { doc, onSnapshot } from 'firebase/firestore';
@@ -166,13 +166,13 @@ const App: React.FC = () => {
     };
   }, []); // Note: currentView is used but we only want to navigate on initial load/auth change logic
 
-  const navigate = (view: ViewType, data?: any) => {
+  const navigate = useCallback((view: ViewType, data?: any) => {
     if (view === AppView.MISSION_DETAIL && data) setSelectedMission(data);
     if (view === AppView.MAP && data?.trip) setActiveTrip(data.trip);
     setCurrentView(view);
-  };
+  }, []);
 
-  const handleUpdateStats = async (xp: number, gold: number = 0) => {
+  const handleUpdateStats = useCallback(async (xp: number, gold: number = 0) => {
     if (!authUser) return;
 
     try {
@@ -191,7 +191,7 @@ const App: React.FC = () => {
     } catch (error) {
       console.error('Error updating stats:', error);
     }
-  };
+  }, [authUser]);
 
   const handleAuthSuccess = () => {
     // Auth state listener will handle navigation
@@ -212,7 +212,7 @@ const App: React.FC = () => {
     };
   }, []);
 
-  const renderView = () => {
+  const renderView = useMemo(() => {
     console.log("Rendering view:", currentView);
 
     if (!isOnline && currentView !== AppView.GUIDE && currentView !== AppView.GALLERY) {
@@ -386,7 +386,7 @@ const App: React.FC = () => {
       default:
         return <Welcome onEnter={() => navigate(AuthView.REGISTER)} />;
     }
-  };
+  }, [currentView, authUser, user, activeTrip, selectedMission, handleUpdateStats, navigate]);
 
   // Loading Screen
   if (authLoading) {
@@ -420,7 +420,13 @@ const App: React.FC = () => {
         </div>
       )}
       <div className="flex-1 overflow-y-auto no-scrollbar pb-24">
-        {renderView()}
+        <Suspense fallback={
+          <div className="flex items-center justify-center h-full">
+            <div className="text-primary animate-spin text-4xl">⏳</div>
+          </div>
+        }>
+          {renderView}
+        </Suspense>
       </div>
       {showNav && (
         <BottomNav

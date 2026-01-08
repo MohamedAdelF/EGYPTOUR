@@ -315,8 +315,14 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete, user, setUser }) =>
                 onComplete(trip);
             }, 500);
 
-        } catch (error) {
+        } catch (error: any) {
             console.error('Error generating trip:', error);
+            clearInterval(progressInterval);
+            
+            // Show error message but still use fallback
+            if (error?.message?.includes('API')) {
+                console.warn('API error, using fallback trip');
+            }
 
             // Fallback to default trip
             const defaultTrip: Trip = {

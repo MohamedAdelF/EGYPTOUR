@@ -21,10 +21,11 @@ import {
     query,
     where,
     getDocs,
-    Timestamp
+    Timestamp,
+    addDoc
 } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
-import { Trip } from '../types';
+import { Trip, HiddenSecret } from '../types';
 
 // Firebase configuration
 const firebaseConfig = {
@@ -67,6 +68,7 @@ export interface FirestoreUserProfile {
         photosCapture: number;
     };
     badges: string[];
+    aiPersonality?: string; // AI Personality preference
     createdAt: Timestamp;
     updatedAt: Timestamp;
     lastLoginAt: Timestamp;
@@ -339,6 +341,47 @@ export const updateTaskStatus = async (uid: string, tripId: string, missionId: s
         progress,
         updatedAt: Timestamp.now()
     });
+};
+
+// Hidden Secrets functions
+export const saveDiscoveredSecret = async (uid: string, secretId: string) => {
+    const secretRef = doc(db, 'users', uid, 'discoveredSecrets', secretId);
+    await setDoc(secretRef, {
+        secretId,
+        discoveredAt: Timestamp.now()
+    }, { merge: true });
+};
+
+export const getDiscoveredSecrets = async (uid: string): Promise<string[]> => {
+    const secretsRef = collection(db, 'users', uid, 'discoveredSecrets');
+    const secretsSnap = await getDocs(secretsRef);
+    return secretsSnap.docs.map(doc => doc.data().secretId);
+};
+
+export const checkSecretDiscovered = async (uid: string, secretId: string): Promise<boolean> => {
+    const secretRef = doc(db, 'users', uid, 'discoveredSecrets', secretId);
+    const secretSnap = await getDoc(secretRef);
+    return secretSnap.exists();
+};
+
+export const updateSecretDiscoveryCount = async (secretId: string) => {
+    const secretRef = doc(db, 'globalSecrets', secretId);
+    const secretDoc = await getDoc(secretRef);
+    
+    if (secretDoc.exists()) {
+        const currentCount = secretDoc.data().discoveredCount || 0;
+        await updateDoc(secretRef, {
+            discoveredCount: currentCount + 1,
+            lastDiscoveredAt: Timestamp.now()
+        });
+    } else {
+        await setDoc(secretRef, {
+            secretId,
+            discoveredCount: 1,
+            firstDiscoveredAt: Timestamp.now(),
+            lastDiscoveredAt: Timestamp.now()
+        });
+    }
 };
 
 // Auth state observer

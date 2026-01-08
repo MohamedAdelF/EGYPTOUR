@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { APIProvider, Map, AdvancedMarker, Pin } from '@vis.gl/react-google-maps';
-import { UserStats, Trip, Mission } from '../types';
+import { UserStats, Trip, Mission, HiddenSecret } from '../types';
+import { HIDDEN_SECRETS, getSecretsNearLocation, isNearSecret } from '../lib/secrets';
+import { auth, checkSecretDiscovered } from '../lib/firebase';
 
 interface MapViewProps {
   onScan: () => void;
@@ -17,23 +19,42 @@ const MapView: React.FC<MapViewProps> = ({ onScan, stats, trip, onSelectMission 
   const [selectedMission, setSelectedMission] = useState<Mission | null>(
     trip?.missions?.find(m => m.status === 'active') || trip?.missions?.[0] || null
   );
+  const [nearbySecrets, setNearbySecrets] = useState<HiddenSecret[]>([]);
+  const [discoveredSecrets, setDiscoveredSecrets] = useState<Set<string>>(new Set());
 
   const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
   const mapId = import.meta.env.VITE_GOOGLE_MAPS_MAP_ID;
 
-  // Get User Location
+  // Get User Location and check for secrets
   useEffect(() => {
     if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
+      const watchId = navigator.geolocation.watchPosition(
         (position) => {
-          setUserLocation({
+          const location = {
             lat: position.coords.latitude,
             lng: position.coords.longitude
-          });
+          };
+          setUserLocation(location);
+
+          // Check for nearby secrets
+          const secrets = getSecretsNearLocation(location.lat, location.lng);
+          setNearbySecrets(secrets);
+
+          // Load discovered secrets
+          if (auth.currentUser) {
+            secrets.forEach(async (secret) => {
+              const isDiscovered = await checkSecretDiscovered(auth.currentUser!.uid, secret.id);
+              if (isDiscovered) {
+                setDiscoveredSecrets(prev => new Set([...prev, secret.id]));
+              }
+            });
+          }
         },
         (error) => console.log('Error getting location', error),
-        { enableHighAccuracy: true }
+        { enableHighAccuracy: true, maximumAge: 5000, timeout: 10000 }
       );
+
+      return () => navigator.geolocation.clearWatch(watchId);
     }
   }, []);
 
@@ -111,8 +132,63 @@ const MapView: React.FC<MapViewProps> = ({ onScan, stats, trip, onSelectMission 
               />
             </AdvancedMarker>
           ))}
+
+          {/* Hidden Secrets Markers */}
+          {HIDDEN_SECRETS.filter(secret => {
+            // Show secrets for missions in view
+            return displayMissions.some(m => m.id === secret.missionId);
+          }).map((secret) => {
+            const isDiscovered = discoveredSecrets.has(secret.id);
+            const isNearby = userLocation && isNearSecret(userLocation.lat, userLocation.lng, secret);
+            
+            return (
+              <AdvancedMarker
+                key={secret.id}
+                position={secret.location}
+                title={secret.title}
+              >
+                <div className={`relative ${isDiscovered ? 'opacity-60' : isNearby ? 'animate-pulse' : ''}`}>
+                  <div className={`w-8 h-8 rounded-full border-2 flex items-center justify-center ${
+                    isDiscovered 
+                      ? 'bg-green-500/80 border-green-400' 
+                      : isNearby
+                        ? 'bg-purple-500/90 border-purple-400 shadow-lg shadow-purple-400/50'
+                        : 'bg-purple-500/50 border-purple-300'
+                  }`}>
+                    {isDiscovered ? (
+                      <span className="material-symbols-outlined text-white text-sm">check</span>
+                    ) : (
+                      <span className="material-symbols-outlined text-white text-sm">visibility_off</span>
+                    )}
+                  </div>
+                  {isNearby && !isDiscovered && (
+                    <div className="absolute -top-2 -right-2 w-3 h-3 rounded-full bg-yellow-400 animate-ping"></div>
+                  )}
+                </div>
+              </AdvancedMarker>
+            );
+          })}
         </Map>
       </APIProvider>
+
+      {/* Hidden Secrets Notification */}
+      {nearbySecrets.length > 0 && nearbySecrets.some(s => !discoveredSecrets.has(s.id)) && (
+        <div className="absolute top-24 left-0 right-0 px-6 z-30 pointer-events-none">
+          <div className="bg-gradient-to-r from-purple-600/90 to-pink-600/90 backdrop-blur-md p-4 rounded-2xl border border-white/20 shadow-xl pointer-events-auto animate-fade-in">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center">
+                <span className="material-symbols-outlined text-white">auto_awesome</span>
+              </div>
+              <div className="flex-1">
+                <p className="text-white font-bold text-sm font-arabic">🔍 سر مخفي قريب!</p>
+                <p className="text-white/80 text-xs font-arabic">
+                  {nearbySecrets.filter(s => !discoveredSecrets.has(s.id)).length} سر قريب منك
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Top HUD */}
       <div className="absolute top-0 left-0 right-0 p-6 pt-12 z-30 pointer-events-none">

@@ -81,3 +81,45 @@ export interface Message {
   role: 'user' | 'model';
   parts: { text: string }[];
 }
+
+// Hidden Secret interface for discovering hidden locations
+export interface HiddenSecret {
+  id: string;
+  missionId: string;
+  title: string;
+  description: string;
+  location: { lat: number; lng: number; name: string };
+  radius: number; // in meters
+  xpReward: number;
+  goldReward: number;
+  hint: string;
+  imageUrl?: string;
+  discoveredCount?: number; // track how many users found it
+  rarityPercentage?: number; // "Only 2% of tourists find this!"
+}
+
+// AI Personality enum for Live Guide
+export enum AIPersonality {
+  CLEOPATRA = 'cleopatra',
+  AHMED = 'ahmed',
+  ZAHI = 'zahi',
+  FRIENDLY = 'friendly'
+}
+
+// AR Overlay type for Time Travel feature
+export interface AROverlay {
+  id: string;
+  missionId: string;
+  historicalImage: string;
+  description: string;
+  year: string;
+}
+
+// Photo Analysis interface for Compare Your Shot feature
+export interface PhotoAnalysis {
+  composition: number; // 0-100
+  percentile: number; // top X%
+  feedback: string;
+  suggestions: string[];
+  rating: 'excellent' | 'good' | 'average' | 'needs-improvement';
+}

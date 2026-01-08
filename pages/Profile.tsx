@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { UserStats, UserProfile } from '../types';
+import { UserStats, UserProfile, AIPersonality } from '../types';
 import { User } from 'firebase/auth';
-import { db, auth } from '../lib/firebase';
+import { db, auth, getUserProfile, updateUserProfile } from '../lib/firebase';
 import { collection, query, orderBy, onSnapshot } from 'firebase/firestore';
+import PersonalitySelector from '../components/PersonalitySelector';
 
 interface ProfileProps {
   stats: UserStats;
@@ -15,8 +16,32 @@ interface ProfileProps {
 
 const Profile: React.FC<ProfileProps> = ({ stats, user, authUser, onGoToStory, onGoToGallery, onLogout }) => {
   const [gallery, setGallery] = useState<any[]>([]);
+  const [selectedPersonality, setSelectedPersonality] = useState<AIPersonality>(AIPersonality.FRIENDLY);
+  const [showPersonalitySelector, setShowPersonalitySelector] = useState(false);
   const displayName = user?.name || authUser?.displayName || 'مستكشف';
   const photoURL = authUser?.photoURL || 'https://lh3.googleusercontent.com/aida-public/AB6AXuB9GzTiGbzqHFFTw8IZ2XoqhwdAViIToZaNsm9bNXcMja1OZ9PlsZkbE7ClH0FjmMKSkn_h7Au--ZEEn92ziSoMV5NukwIgy3Z5g1itW2XZYjNDovDYdZ3qHjia29r_sl-Hpp1fgOcHRGdx-tUxTlg-7z7Us_q8Eu9qzMLD9fnqT6v7BUMrIOLdxtd5Q3mx5vC88MnRowh9wBVy7Y55fUZxCcXDkemItEWbPmCgUCTEv8FeAjio7N8MeINAcbns8zQEWCZIAlmZfss';
+
+  // Load personality from user profile
+  useEffect(() => {
+    if (authUser?.uid) {
+      getUserProfile(authUser.uid).then(profile => {
+        if (profile && (profile as any).aiPersonality) {
+          setSelectedPersonality((profile as any).aiPersonality as AIPersonality);
+        }
+      }).catch(() => {});
+    }
+  }, [authUser]);
+
+  const handlePersonalityChange = async (personality: AIPersonality) => {
+    setSelectedPersonality(personality);
+    if (authUser?.uid) {
+      try {
+        await updateUserProfile(authUser.uid, { aiPersonality: personality } as any);
+      } catch (error) {
+        console.error("Error updating personality:", error);
+      }
+    }
+  };
 
   // Fetch Gallery
   useEffect(() => {
@@ -199,7 +224,31 @@ const Profile: React.FC<ProfileProps> = ({ stats, user, authUser, onGoToStory, o
           </div>
           <span className="material-symbols-outlined text-gray-400 group-hover:translate-x-1 transition-transform rtl:rotate-180">arrow_forward</span>
         </button>
+
+        <button
+          onClick={() => setShowPersonalitySelector(!showPersonalitySelector)}
+          className="w-full bg-gradient-to-r from-purple-500/20 to-pink-500/20 border border-purple-500/30 p-4 rounded-2xl flex items-center justify-between group active:scale-95 transition-all"
+        >
+          <div className="flex items-center gap-3">
+            <span className="material-symbols-outlined text-purple-400">psychology</span>
+            <span className="text-sm font-bold font-arabic">شخصية المرشد الذكي</span>
+          </div>
+          <span className={`material-symbols-outlined text-purple-400 group-hover:translate-x-1 transition-transform rtl:rotate-180 ${showPersonalitySelector ? 'rotate-180' : ''}`}>arrow_forward</span>
+        </button>
       </div>
+
+      {/* Personality Selector */}
+      {showPersonalitySelector && (
+        <div className="px-6 mb-8">
+          <div className="bg-white/5 border border-white/10 p-6 rounded-2xl">
+            <PersonalitySelector
+              selectedPersonality={selectedPersonality}
+              onSelect={handlePersonalityChange}
+              language={user?.language || 'ar'}
+            />
+          </div>
+        </div>
+      )}
 
       {/* Gallery Section */}
       {gallery.length > 0 && (
